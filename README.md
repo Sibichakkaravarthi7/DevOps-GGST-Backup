@@ -1,0 +1,23 @@
+Create the destination first:
+
+ssh -i "C:\path\to\YOUR-KEY.pem" ubuntu@15.207.19.196 "mkdir -p /home/ubuntu/dr-recovery"
+
+Then copy the three files individually:
+
+scp -i "C:\path\to\YOUR-KEY.pem" "C:\Users\91756\Desktop\GGST\Desktop-Backup\restore-server.sh" ubuntu@15.207.19.196:/home/ubuntu/dr-recovery/
+
+scp -i "C:\path\to\YOUR-KEY.pem" "C:\Users\91756\Desktop\GGST\Desktop-Backup\server-dr-20260911-062830.tar.zst" ubuntu@15.207.19.196:/home/ubuntu/dr-recovery/
+
+scp -i "C:\path\to\YOUR-KEY.pem" "C:\Users\91756\Desktop\GGST\Desktop-Backup\server-dr-20260911-062830.tar.zst.sha256" ubuntu@15.207.19.196:/home/ubuntu/dr-recovery/
+
+cd /home/ubuntu/dr-recovery
+sudo bash restore-server.sh
+
+
+Local
+Desktop-Backup/
+   ↓
+/home/ubuntu/dr-recovery/
+   ├── restore-server.sh
+   ├── server-dr-20260911-062830.tar.zst
+   └── server-dr-20260911-062830.tar.zst.sha256

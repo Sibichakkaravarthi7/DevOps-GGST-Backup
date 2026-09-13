@@ -1,4 +1,4 @@
-# AWS Kubernetes Platform
+# AWS Kubernetes Cluster Autoscaler 
 
 This repository creates a self-managed Kubernetes cluster on AWS using:
 

@@ -1,0 +1,101 @@
+---
+- name: Install Kubernetes repository prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gpg
+    state: present
+    update_cache: true
+
+- name: Create APT keyrings directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Download Kubernetes repository signing key
+  ansible.builtin.get_url:
+    url: "{{ kubernetes_apt_repository_base }}Release.key"
+    dest: /tmp/kubernetes-release.key
+    owner: root
+    group: root
+    mode: "0644"
+    force: true
+
+- name: Convert Kubernetes repository key to GPG keyring
+  ansible.builtin.command:
+    cmd: >
+      gpg --dearmor
+      --yes
+      --output {{ kubernetes_apt_keyring }}
+      /tmp/kubernetes-release.key
+  args:
+    creates: "{{ kubernetes_apt_keyring }}"
+
+- name: Configure Kubernetes APT repository
+  ansible.builtin.apt_repository:
+    repo: "deb [signed-by={{ kubernetes_apt_keyring }}] {{ kubernetes_apt_repository_base }} /"
+    filename: kubernetes
+    state: present
+    update_cache: true
+
+- name: Install Kubernetes packages
+  ansible.builtin.apt:
+    name: "{{ item }}={{ kubernetes_version }}-*"
+    state: present
+    allow_downgrade: true
+  loop: "{{ kubernetes_packages }}"
+
+- name: Hold kubelet package
+  ansible.builtin.dpkg_selections:
+    name: kubelet
+    selection: hold
+
+- name: Hold kubeadm package
+  ansible.builtin.dpkg_selections:
+    name: kubeadm
+    selection: hold
+
+- name: Hold kubectl package
+  ansible.builtin.dpkg_selections:
+    name: kubectl
+    selection: hold
+
+- name: Enable kubelet service
+  ansible.builtin.systemd:
+    name: kubelet
+    enabled: true
+    daemon_reload: true
+
+- name: Check installed kubeadm version
+  ansible.builtin.command:
+    cmd: kubeadm version -o short
+  register: kubernetes_kubeadm_version
+  changed_when: false
+
+- name: Check installed kubelet version
+  ansible.builtin.command:
+    cmd: kubelet --version
+  register: kubernetes_kubelet_version
+  changed_when: false
+
+- name: Check installed kubectl version
+  ansible.builtin.command:
+    cmd: kubectl version --client=true --output=json
+  register: kubernetes_kubectl_version
+  changed_when: false
+
+- name: Display Kubernetes versions
+  ansible.builtin.debug:
+    msg:
+      - "kubeadm: {{ kubernetes_kubeadm_version.stdout }}"
+      - "kubelet: {{ kubernetes_kubelet_version.stdout }}"
+      - "kubectl: {{ kubernetes_kubectl_version.stdout }}"
+
+- name: Remove temporary Kubernetes signing key
+  ansible.builtin.file:
+    path: /tmp/kubernetes-release.key
+    state: absent

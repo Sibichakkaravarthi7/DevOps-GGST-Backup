@@ -1,0 +1,16 @@
+---
+# ============================================================
+# WORKER NODE VARIABLES
+# ============================================================
+
+aws_region: "us-east-1"
+
+cluster_name: "k8s-cluster"
+
+worker_join_command_parameter: "/k8s/join-command"
+
+worker_join_timeout: "10m"
+
+worker_container_runtime_endpoint: "unix:///var/run/containerd/containerd.sock"
+
+worker_cloud_provider: "external"

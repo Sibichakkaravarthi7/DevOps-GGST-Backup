@@ -1,0 +1,166 @@
+---
+# ============================================================
+# CONTROL PLANE INITIALIZATION
+# ============================================================
+
+- name: Install control-plane helper packages
+  ansible.builtin.apt:
+    name:
+      - awscli
+      - jq
+    state: present
+    update_cache: true
+
+- name: Ensure Kubernetes configuration directory exists
+  ansible.builtin.file:
+    path: /etc/kubernetes
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Render kubeadm configuration
+  ansible.builtin.template:
+    src: kubeadm-config.yaml.j2
+    dest: "{{ control_plane_kubeadm_config }}"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Check whether control plane is already initialized
+  ansible.builtin.stat:
+    path: "{{ control_plane_admin_conf }}"
+  register: control_plane_admin_conf_stat
+
+- name: Initialize Kubernetes control plane
+  ansible.builtin.command:
+    cmd: >
+      kubeadm init
+      --config {{ control_plane_kubeadm_config }}
+      --upload-certs
+    creates: "{{ control_plane_admin_conf }}"
+  when: not control_plane_admin_conf_stat.stat.exists
+  register: control_plane_kubeadm_init
+  timeout: "{{ control_plane_init_timeout }}"
+
+- name: Ensure root kubeconfig directory exists
+  ansible.builtin.file:
+    path: "{{ control_plane_kubeconfig_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Configure root kubeconfig
+  ansible.builtin.copy:
+    src: "{{ control_plane_admin_conf }}"
+    dest: "{{ control_plane_kubeconfig }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Wait for Kubernetes API server
+  ansible.builtin.command:
+    cmd: >
+      kubectl
+      --kubeconfig {{ control_plane_admin_conf }}
+      get --raw=/readyz
+  register: control_plane_api_ready
+  changed_when: false
+  retries: 30
+  delay: 5
+  until: control_plane_api_ready.rc == 0
+
+- name: Verify control-plane node is registered
+  ansible.builtin.command:
+    cmd: >
+      kubectl
+      --kubeconfig {{ control_plane_admin_conf }}
+      get node
+      --selector=node-role.kubernetes.io/control-plane
+      -o name
+  register: control_plane_node
+  changed_when: false
+  retries: 20
+  delay: 5
+  until: control_plane_node.stdout | trim | length > 0
+
+# ============================================================
+# WORKER JOIN COMMAND
+# ============================================================
+
+- name: Generate worker join command
+  ansible.builtin.command:
+    cmd: kubeadm token create --print-join-command
+  register: control_plane_join_command
+  changed_when: false
+  no_log: true
+
+- name: Validate generated worker join command
+  ansible.builtin.assert:
+    that:
+      - control_plane_join_command.stdout | trim | length > 0
+      - "'kubeadm join' in control_plane_join_command.stdout"
+      - "'--token' in control_plane_join_command.stdout"
+      - "'--discovery-token-ca-cert-hash' in control_plane_join_command.stdout"
+    fail_msg: "kubeadm did not generate a valid worker join command."
+  no_log: true
+
+# ============================================================
+# AWS SSM JOIN PARAMETER
+# ============================================================
+
+- name: Publish worker join command to AWS SSM
+  ansible.builtin.command:
+    cmd: >
+      aws ssm put-parameter
+      --region {{ aws_region }}
+      --name {{ ssm_join_parameter }}
+      --type SecureString
+      --value "{{ control_plane_join_command.stdout | trim }}"
+      --overwrite
+  environment:
+    AWS_DEFAULT_REGION: "{{ aws_region }}"
+  when: control_plane_publish_join_command | bool
+  register: control_plane_ssm_publish
+  changed_when: true
+  no_log: true
+
+- name: Verify worker join parameter exists in AWS SSM
+  ansible.builtin.command:
+    cmd: >
+      aws ssm get-parameter
+      --region {{ aws_region }}
+      --name {{ ssm_join_parameter }}
+      --with-decryption
+      --query Parameter.Name
+      --output text
+  environment:
+    AWS_DEFAULT_REGION: "{{ aws_region }}"
+  register: control_plane_ssm_verify
+  changed_when: false
+  when: control_plane_publish_join_command | bool
+
+- name: Validate worker join parameter
+  ansible.builtin.assert:
+    that:
+      - control_plane_ssm_verify.stdout | trim == ssm_join_parameter
+    fail_msg: "Worker join command was not correctly stored in AWS SSM."
+  when: control_plane_publish_join_command | bool
+
+# ============================================================
+# FINAL VALIDATION
+# ============================================================
+
+- name: Display control-plane private IP
+  ansible.builtin.debug:
+    msg: "Control-plane private IP: {{ ansible_default_ipv4.address }}"
+
+- name: Display Kubernetes API endpoint
+  ansible.builtin.debug:
+    msg: "Kubernetes API endpoint: https://{{ ansible_default_ipv4.address }}:{{ control_plane_api_port }}"
+
+- name: Display SSM join parameter name
+  ansible.builtin.debug:
+    msg: "Worker join command stored in SSM parameter: {{ ssm_join_parameter }}"

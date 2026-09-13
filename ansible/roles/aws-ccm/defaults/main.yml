@@ -1,0 +1,30 @@
+---
+# ============================================================
+# AWS CLOUD CONTROLLER MANAGER DEFAULTS
+# ============================================================
+
+aws_ccm_namespace: "kube-system"
+
+# Kubernetes 1.30 -> AWS CCM 1.30.x
+# Pin the exact release deliberately for reproducible builds.
+aws_ccm_version: "v1.30.0"
+
+aws_ccm_image: "registry.k8s.io/provider-aws/cloud-controller-manager:{{ aws_ccm_version }}"
+
+aws_ccm_manifest_path: "/tmp/aws-cloud-controller-manager.yaml"
+
+aws_ccm_deployment_name: "cloud-controller-manager"
+
+aws_ccm_wait_timeout: 300
+
+aws_ccm_kubeconfig: "/etc/kubernetes/admin.conf"
+
+aws_ccm_cloud_provider: "aws"
+
+# Flannel handles Pod networking.
+# AWS CCM must not create VPC routes for Pod CIDRs.
+aws_ccm_configure_cloud_routes: false
+
+aws_ccm_leader_elect: true
+
+aws_ccm_log_level: 2

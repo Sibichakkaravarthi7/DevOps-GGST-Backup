@@ -1,0 +1,196 @@
+---
+# ============================================================
+# FLANNEL PRE-CHECKS
+# ============================================================
+
+- name: Verify kubectl exists
+  ansible.builtin.command:
+    cmd: kubectl version --client=true --output=json
+  register: flannel_kubectl_version
+  changed_when: false
+
+- name: Verify Kubernetes API is reachable
+  ansible.builtin.command:
+    cmd: >
+      kubectl
+      --kubeconfig {{ flannel_kubeconfig }}
+      get --raw=/readyz
+  register: flannel_api_ready
+  changed_when: false
+  retries: 30
+  delay: 5
+  until: flannel_api_ready.rc == 0
+
+- name: Verify Flannel Pod CIDR is configured
+  ansible.builtin.assert:
+    that:
+      - flannel_pod_cidr | length > 0
+      - flannel_pod_cidr == pod_cidr
+    fail_msg: >-
+      Flannel Pod CIDR must match the Kubernetes pod_cidr.
+      Kubernetes pod_cidr={{ pod_cidr }},
+      Flannel pod_cidr={{ flannel_pod_cidr }}.
+
+# ============================================================
+# DOWNLOAD PINNED FLANNEL MANIFEST
+# ============================================================
+
+- name: Download pinned Flannel manifest
+  ansible.builtin.get_url:
+    url: "{{ flannel_manifest_url }}"
+    dest: "{{ flannel_manifest_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+    force: true
+
+# ============================================================
+# PARAMETERIZE POD CIDR
+# ============================================================
+
+- name: Check downloaded Flannel manifest
+  ansible.builtin.slurp:
+    src: "{{ flannel_manifest_path }}"
+  register: flannel_manifest_raw
+
+- name: Verify downloaded Flannel manifest contains default Pod CIDR
+  ansible.builtin.assert:
+    that:
+      - "'10.244.0.0/16' in (flannel_manifest_raw.content | b64decode)"
+    fail_msg: >-
+      The pinned Flannel manifest does not contain the expected default
+      Pod CIDR 10.244.0.0/16. Review the manifest before deployment.
+
+- name: Replace Flannel default Pod CIDR
+  ansible.builtin.replace:
+    path: "{{ flannel_manifest_path }}"
+    regexp: "10\\.244\\.0\\.0/16"
+    replace: "{{ flannel_pod_cidr }}"
+
+# ============================================================
+# VERIFY PARAMETERIZED MANIFEST
+# ============================================================
+
+- name: Read parameterized Flannel manifest
+  ansible.builtin.slurp:
+    src: "{{ flannel_manifest_path }}"
+  register: flannel_parameterized_manifest
+
+- name: Verify configured Pod CIDR is present
+  ansible.builtin.assert:
+    that:
+      - flannel_pod_cidr in (flannel_parameterized_manifest.content | b64decode)
+    fail_msg: >-
+      Flannel manifest does not contain the configured Pod CIDR
+      {{ flannel_pod_cidr }}.
+
+# ============================================================
+# INSTALL FLANNEL
+# ============================================================
+
+- name: Apply Flannel manifest
+  ansible.builtin.command:
+    cmd: >
+      kubectl
+      --kubeconfig {{ flannel_kubeconfig }}
+      apply
+      -f {{ flannel_manifest_path }}
+  register: flannel_apply
+  changed_when: >
+    'created' in flannel_apply.stdout
+    or 'configured' in flannel_apply.stdout
+
+# ============================================================
+# WAIT FOR FLANNEL DAEMONSET
+# ============================================================
+
+- name: Wait for Flannel DaemonSet to exist
+  ansible.builtin.command:
+    cmd: >
+      kubectl
+      --kubeconfig {{ flannel_kubeconfig }}
+      -n {{ flannel_namespace }}
+      get daemonset {{ flannel_daemonset_name }}
+  register: flannel_daemonset
+  changed_when: false
+  retries: 30
+  delay: 5
+  until: flannel_daemonset.rc == 0
+
+- name: Wait for Flannel DaemonSet rollout
+  ansible.builtin.command:
+    cmd: >
+      kubectl
+      --kubeconfig {{ flannel_kubeconfig }}
+      -n {{ flannel_namespace }}
+      rollout status
+      daemonset/{{ flannel_daemonset_name }}
+      --timeout={{ flannel_wait_timeout }}s
+  register: flannel_rollout
+  changed_when: false
+
+# ============================================================
+# VALIDATE FLANNEL PODS
+# ============================================================
+
+- name: Get Flannel pods
+  ansible.builtin.command:
+    cmd: >
+      kubectl
+      --kubeconfig {{ flannel_kubeconfig }}
+      -n {{ flannel_namespace }}
+      get pods
+      -l app=flannel
+      -o wide
+  register: flannel_pods
+  changed_when: false
+
+- name: Display Flannel pods
+  ansible.builtin.debug:
+    msg: "{{ flannel_pods.stdout_lines }}"
+
+- name: Verify Flannel pods are running
+  ansible.builtin.command:
+    cmd: >
+      kubectl
+      --kubeconfig {{ flannel_kubeconfig }}
+      -n {{ flannel_namespace }}
+      get pods
+      -l app=flannel
+      -o jsonpath='{range .items[*]}{.status.phase}{"\n"}{end}'
+  register: flannel_pod_phases
+  changed_when: false
+
+- name: Validate Flannel pod states
+  ansible.builtin.assert:
+    that:
+      - flannel_pod_phases.stdout_lines | length > 0
+      - flannel_pod_phases.stdout_lines | reject('equalto', 'Running') | list | length == 0
+    fail_msg: "One or more Flannel pods are not Running."
+
+# ============================================================
+# NETWORK VALIDATION
+# ============================================================
+
+- name: Get Kubernetes nodes
+  ansible.builtin.command:
+    cmd: >
+      kubectl
+      --kubeconfig {{ flannel_kubeconfig }}
+      get nodes
+      -o wide
+  register: flannel_nodes
+  changed_when: false
+
+- name: Display Kubernetes nodes
+  ansible.builtin.debug:
+    msg: "{{ flannel_nodes.stdout_lines }}"
+
+# ============================================================
+# CLEANUP
+# ============================================================
+
+- name: Remove temporary Flannel manifest
+  ansible.builtin.file:
+    path: "{{ flannel_manifest_path }}"
+    state: absent

@@ -1,0 +1,79 @@
+---
+# ============================================================================
+# AWS EC2 DYNAMIC INVENTORY
+# ============================================================================
+#
+# Discovers EC2 instances belonging to the selected Kubernetes cluster.
+#
+# Required cluster tag:
+#
+#   kubernetes.io/cluster/<cluster_name> = owned
+#
+# Role classification:
+#
+#   Role = control-plane
+#   Role = worker
+#
+# Cluster and region are selected through environment variables.
+# ============================================================================
+
+plugin: amazon.aws.aws_ec2
+
+regions:
+  - "{{ lookup('env', 'AWS_REGION') | default('us-east-1', true) }}"
+
+filters:
+  instance-state-name:
+    - running
+
+  "tag:kubernetes.io/cluster/{{ lookup('env', 'K8S_CLUSTER_NAME') | default('k8s-cluster', true) }}":
+    - owned
+
+hostnames:
+  - private-ip-address
+
+compose:
+  ansible_host: private_ip_address
+  ansible_user: "'ubuntu'"
+  ansible_python_interpreter: "'/usr/bin/python3'"
+
+keyed_groups:
+
+  # Creates groups such as:
+  #
+  #   role_control_plane
+  #   role_worker
+  #
+  - key: tags.Role
+    prefix: role_
+    separator: "_"
+
+  # Creates groups based on EC2 instance type.
+  #
+  # Example:
+  #
+  #   instance_type_t3_small
+  #
+  - key: instance_type
+    prefix: instance_type_
+    separator: "_"
+
+groups:
+
+  # Ansible control-plane group.
+  control_plane: >-
+    tags.Role is defined and
+    tags.Role == 'control-plane'
+
+  # Ansible worker group.
+  workers: >-
+    tags.Role is defined and
+    tags.Role == 'worker'
+
+  # All Kubernetes nodes.
+  kubernetes: >-
+    tags.Role is defined and
+    (
+      tags.Role == 'control-plane' or
+      tags.Role == 'worker'
+    )

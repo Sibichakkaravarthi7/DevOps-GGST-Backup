@@ -1,0 +1,166 @@
+---
+- name: Verify kubectl is available
+  ansible.builtin.command:
+    cmd: kubectl version --client
+  environment:
+    KUBECONFIG: "{{ cluster_autoscaler_kubeconfig }}"
+  register: cluster_autoscaler_kubectl_client
+  changed_when: false
+
+- name: Verify Kubernetes API is reachable
+  ansible.builtin.command:
+    cmd: kubectl get --raw=/readyz
+  environment:
+    KUBECONFIG: "{{ cluster_autoscaler_kubeconfig }}"
+  register: cluster_autoscaler_api_ready
+  changed_when: false
+  retries: 10
+  delay: 5
+  until: cluster_autoscaler_api_ready.rc == 0
+
+- name: Validate Cluster Autoscaler configuration
+  ansible.builtin.assert:
+    that:
+      - cluster_name | length > 0
+      - aws_region | length > 0
+      - cluster_autoscaler_version | length > 0
+      - cluster_autoscaler_cloud_provider == "aws"
+      - cluster_autoscaler_expander == "least-waste"
+      - cluster_autoscaler_auto_discovery_tags | length == 2
+      - "'k8s.io/cluster-autoscaler/enabled' in cluster_autoscaler_auto_discovery_tags"
+      - "'k8s.io/cluster-autoscaler/' ~ cluster_name in cluster_autoscaler_auto_discovery_tags"
+    fail_msg: "Cluster Autoscaler configuration is invalid."
+
+- name: Render Cluster Autoscaler manifest
+  ansible.builtin.template:
+    src: cluster-autoscaler.yaml.j2
+    dest: "{{ cluster_autoscaler_manifest_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Validate Cluster Autoscaler manifest with kubectl
+  ansible.builtin.command:
+    cmd: >
+      kubectl apply
+      --dry-run=client
+      -f {{ cluster_autoscaler_manifest_path }}
+      -o yaml
+  environment:
+    KUBECONFIG: "{{ cluster_autoscaler_kubeconfig }}"
+  register: cluster_autoscaler_manifest_validation
+  changed_when: false
+
+- name: Verify CA auto-discovery argument exists
+  ansible.builtin.assert:
+    that:
+      - >
+        (
+          cluster_autoscaler_manifest_validation.stdout
+          is search(
+            'k8s.io/cluster-autoscaler/enabled'
+          )
+        )
+      - >
+        (
+          cluster_autoscaler_manifest_validation.stdout
+          is search(
+            'k8s.io/cluster-autoscaler/' ~ cluster_name
+          )
+        )
+    fail_msg: "Cluster Autoscaler ASG auto-discovery configuration is missing."
+
+- name: Apply Cluster Autoscaler manifest
+  ansible.builtin.command:
+    cmd: kubectl apply -f {{ cluster_autoscaler_manifest_path }}
+  environment:
+    KUBECONFIG: "{{ cluster_autoscaler_kubeconfig }}"
+  register: cluster_autoscaler_apply
+  changed_when: >
+    'created' in cluster_autoscaler_apply.stdout or
+    'configured' in cluster_autoscaler_apply.stdout
+
+- name: Wait for Cluster Autoscaler deployment rollout
+  ansible.builtin.command:
+    cmd: >
+      kubectl rollout status
+      deployment/{{ cluster_autoscaler_deployment_name }}
+      -n {{ cluster_autoscaler_namespace }}
+      --timeout={{ cluster_autoscaler_wait_timeout }}s
+  environment:
+    KUBECONFIG: "{{ cluster_autoscaler_kubeconfig }}"
+  register: cluster_autoscaler_rollout
+  changed_when: false
+
+- name: Get Cluster Autoscaler pod status
+  ansible.builtin.command:
+    cmd: >
+      kubectl get pods
+      -n {{ cluster_autoscaler_namespace }}
+      -l app={{ cluster_autoscaler_deployment_name }}
+      -o json
+  environment:
+    KUBECONFIG: "{{ cluster_autoscaler_kubeconfig }}"
+  register: cluster_autoscaler_pods
+  changed_when: false
+
+- name: Verify Cluster Autoscaler pod exists
+  ansible.builtin.assert:
+    that:
+      - >
+        (
+          cluster_autoscaler_pods.stdout | from_json
+        ).items | length > 0
+    fail_msg: "Cluster Autoscaler pod was not created."
+
+- name: Verify Cluster Autoscaler deployment is available
+  ansible.builtin.command:
+    cmd: >
+      kubectl get deployment
+      {{ cluster_autoscaler_deployment_name }}
+      -n {{ cluster_autoscaler_namespace }}
+      -o jsonpath='{.status.availableReplicas}'
+  environment:
+    KUBECONFIG: "{{ cluster_autoscaler_kubeconfig }}"
+  register: cluster_autoscaler_available
+  changed_when: false
+
+- name: Assert Cluster Autoscaler deployment is available
+  ansible.builtin.assert:
+    that:
+      - cluster_autoscaler_available.stdout | int >= 1
+    fail_msg: "Cluster Autoscaler deployment is not available."
+
+- name: Display Cluster Autoscaler status
+  ansible.builtin.command:
+    cmd: >
+      kubectl get deployment,pods,pdb
+      -n {{ cluster_autoscaler_namespace }}
+      -l app={{ cluster_autoscaler_deployment_name }}
+  environment:
+    KUBECONFIG: "{{ cluster_autoscaler_kubeconfig }}"
+  register: cluster_autoscaler_status
+  changed_when: false
+
+- name: Display Cluster Autoscaler configuration
+  ansible.builtin.debug:
+    msg:
+      - "Cluster Autoscaler version: {{ cluster_autoscaler_version }}"
+      - "Cluster: {{ cluster_name }}"
+      - "AWS region: {{ aws_region }}"
+      - "Cloud provider: {{ cluster_autoscaler_cloud_provider }}"
+      - "ASG discovery: asg:tag={{ cluster_autoscaler_auto_discovery_tags | join(',') }}"
+      - "Expander: {{ cluster_autoscaler_expander }}"
+      - "Balance similar node groups: {{ cluster_autoscaler_balance_similar_node_groups }}"
+      - "Skip local storage: {{ cluster_autoscaler_skip_nodes_with_local_storage }}"
+      - "Skip system pods: {{ cluster_autoscaler_skip_nodes_with_system_pods }}"
+      - "AWS credentials: EC2 instance profile"
+
+- name: Show Cluster Autoscaler status
+  ansible.builtin.debug:
+    var: cluster_autoscaler_status.stdout
+
+- name: Remove temporary Cluster Autoscaler manifest
+  ansible.builtin.file:
+    path: "{{ cluster_autoscaler_manifest_path }}"
+    state: absent

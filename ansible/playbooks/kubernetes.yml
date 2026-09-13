@@ -1,0 +1,8 @@
+---
+- name: Install Kubernetes packages
+  hosts: kubernetes
+  become: true
+  gather_facts: true
+
+  roles:
+    - kubernetes

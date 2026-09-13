@@ -1,0 +1,243 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ cluster_autoscaler_service_account }}
+  namespace: {{ cluster_autoscaler_namespace }}
+
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ cluster_autoscaler_service_account }}
+rules:
+  # -------------------------------------------------------------------------
+  # Core Kubernetes resources
+  # -------------------------------------------------------------------------
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - create
+      - patch
+
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+      - nodes
+      - replicationcontrollers
+      - services
+      - endpoints
+      - persistentvolumeclaims
+      - persistentvolumes
+      - secrets
+      - configmaps
+    verbs:
+      - get
+      - list
+      - watch
+
+  - apiGroups:
+      - ""
+    resources:
+      - nodes/status
+    verbs:
+      - patch
+
+  # -------------------------------------------------------------------------
+  # Workload controllers
+  # -------------------------------------------------------------------------
+  - apiGroups:
+      - apps
+    resources:
+      - daemonsets
+      - deployments
+      - replicasets
+      - statefulsets
+    verbs:
+      - get
+      - list
+      - watch
+
+  - apiGroups:
+      - batch
+    resources:
+      - jobs
+      - cronjobs
+    verbs:
+      - get
+      - list
+      - watch
+
+  # -------------------------------------------------------------------------
+  # Autoscaling
+  # -------------------------------------------------------------------------
+  - apiGroups:
+      - autoscaling
+    resources:
+      - horizontalpodautoscalers
+    verbs:
+      - get
+      - list
+      - watch
+
+  # -------------------------------------------------------------------------
+  # Pod disruption budgets
+  # -------------------------------------------------------------------------
+  - apiGroups:
+      - policy
+    resources:
+      - poddisruptionbudgets
+    verbs:
+      - get
+      - list
+      - watch
+
+  # -------------------------------------------------------------------------
+  # Leader election
+  # -------------------------------------------------------------------------
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    verbs:
+      - create
+      - get
+      - list
+      - update
+      - watch
+
+  # -------------------------------------------------------------------------
+  # EndpointSlice discovery
+  # -------------------------------------------------------------------------
+  - apiGroups:
+      - discovery.k8s.io
+    resources:
+      - endpointslices
+    verbs:
+      - get
+      - list
+      - watch
+
+  # -------------------------------------------------------------------------
+  # Storage discovery
+  # -------------------------------------------------------------------------
+  - apiGroups:
+      - storage.k8s.io
+    resources:
+      - storageclasses
+      - csinodes
+    verbs:
+      - get
+      - list
+      - watch
+
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ cluster_autoscaler_service_account }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ cluster_autoscaler_service_account }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ cluster_autoscaler_service_account }}
+    namespace: {{ cluster_autoscaler_namespace }}
+
+---
+
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ cluster_autoscaler_priority_class }}
+value: 1000000000
+globalDefault: false
+description: "Priority class for Cluster Autoscaler."
+
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ cluster_autoscaler_deployment_name }}
+  namespace: {{ cluster_autoscaler_namespace }}
+  labels:
+    app: {{ cluster_autoscaler_deployment_name }}
+
+spec:
+  replicas: {{ cluster_autoscaler_replicas }}
+
+  selector:
+    matchLabels:
+      app: {{ cluster_autoscaler_deployment_name }}
+
+  template:
+    metadata:
+      labels:
+        app: {{ cluster_autoscaler_deployment_name }}
+
+    spec:
+      serviceAccountName: {{ cluster_autoscaler_service_account }}
+
+      priorityClassName: {{ cluster_autoscaler_priority_class }}
+
+      nodeSelector:
+        kubernetes.io/os: linux
+
+      tolerations:
+        - operator: Exists
+
+      containers:
+        - name: cluster-autoscaler
+
+          image: "{{ cluster_autoscaler_image }}"
+          imagePullPolicy: IfNotPresent
+
+          command:
+            - /cluster-autoscaler
+
+          args:
+            - "--v={{ cluster_autoscaler_log_level }}"
+            - "--stderrthreshold={{ cluster_autoscaler_stderr_threshold }}"
+            - "--cloud-provider={{ cluster_autoscaler_cloud_provider }}"
+            - "--skip-nodes-with-local-storage={{ cluster_autoscaler_skip_nodes_with_local_storage | lower }}"
+            - "--skip-nodes-with-system-pods={{ cluster_autoscaler_skip_nodes_with_system_pods | lower }}"
+            - "--expander={{ cluster_autoscaler_expander }}"
+            - "--balance-similar-node-groups={{ cluster_autoscaler_balance_similar_node_groups | lower }}"
+            - "--node-group-auto-discovery=asg:tag={{ cluster_autoscaler_auto_discovery_tags | join(',') }}"
+
+          resources:
+            requests:
+              cpu: "{{ cluster_autoscaler_cpu_request }}"
+              memory: "{{ cluster_autoscaler_memory_request }}"
+            limits:
+              cpu: "{{ cluster_autoscaler_cpu_limit }}"
+              memory: "{{ cluster_autoscaler_memory_limit }}"
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+
+---
+
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ cluster_autoscaler_deployment_name }}
+  namespace: {{ cluster_autoscaler_namespace }}
+
+spec:
+  minAvailable: {{ cluster_autoscaler_pdb_min_available }}
+
+  selector:
+    matchLabels:
+      app: {{ cluster_autoscaler_deployment_name }}

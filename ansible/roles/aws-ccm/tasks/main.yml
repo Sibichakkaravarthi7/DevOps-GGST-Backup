@@ -1,0 +1,197 @@
+---
+# ============================================================
+# PRE-CHECKS
+# ============================================================
+
+- name: Verify kubectl exists
+  ansible.builtin.command:
+    cmd: kubectl version --client=true --output=json
+  register: aws_ccm_kubectl_version
+  changed_when: false
+
+- name: Verify Kubernetes API is reachable
+  ansible.builtin.command:
+    cmd: >
+      kubectl
+      --kubeconfig {{ aws_ccm_kubeconfig }}
+      get --raw=/readyz
+  register: aws_ccm_api_ready
+  changed_when: false
+  retries: 30
+  delay: 5
+  until: aws_ccm_api_ready.rc == 0
+
+- name: Verify AWS region is configured
+  ansible.builtin.assert:
+    that:
+      - aws_region | length > 0
+    fail_msg: "aws_region must be configured."
+
+- name: Verify cluster name is configured
+  ansible.builtin.assert:
+    that:
+      - cluster_name | length > 0
+    fail_msg: "cluster_name must be configured."
+
+# ============================================================
+# RENDER MANIFEST
+# ============================================================
+
+- name: Render AWS CCM manifest
+  ansible.builtin.template:
+    src: cloud-controller-manager.yaml.j2
+    dest: "{{ aws_ccm_manifest_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+# ============================================================
+# VALIDATE MANIFEST
+# ============================================================
+
+- name: Validate rendered AWS CCM manifest
+  ansible.builtin.command:
+    cmd: >
+      kubectl
+      --kubeconfig {{ aws_ccm_kubeconfig }}
+      apply
+      --dry-run=client
+      -f {{ aws_ccm_manifest_path }}
+  register: aws_ccm_manifest_validation
+  changed_when: false
+
+# ============================================================
+# APPLY CCM
+# ============================================================
+
+- name: Apply AWS Cloud Controller Manager
+  ansible.builtin.command:
+    cmd: >
+      kubectl
+      --kubeconfig {{ aws_ccm_kubeconfig }}
+      apply
+      -f {{ aws_ccm_manifest_path }}
+  register: aws_ccm_apply
+  changed_when: >
+    'created' in aws_ccm_apply.stdout
+    or 'configured' in aws_ccm_apply.stdout
+
+# ============================================================
+# WAIT FOR CCM
+# ============================================================
+
+- name: Wait for AWS CCM deployment
+  ansible.builtin.command:
+    cmd: >
+      kubectl
+      --kubeconfig {{ aws_ccm_kubeconfig }}
+      -n {{ aws_ccm_namespace }}
+      rollout status
+      deployment/{{ aws_ccm_deployment_name }}
+      --timeout={{ aws_ccm_wait_timeout }}s
+  register: aws_ccm_rollout
+  changed_when: false
+
+# ============================================================
+# VALIDATE CCM POD
+# ============================================================
+
+- name: Get AWS CCM pods
+  ansible.builtin.command:
+    cmd: >
+      kubectl
+      --kubeconfig {{ aws_ccm_kubeconfig }}
+      -n {{ aws_ccm_namespace }}
+      get pods
+      -l component=cloud-controller-manager
+      -o wide
+  register: aws_ccm_pods
+  changed_when: false
+
+- name: Display AWS CCM pods
+  ansible.builtin.debug:
+    msg: "{{ aws_ccm_pods.stdout_lines }}"
+
+- name: Verify AWS CCM pod is Running
+  ansible.builtin.command:
+    cmd: >
+      kubectl
+      --kubeconfig {{ aws_ccm_kubeconfig }}
+      -n {{ aws_ccm_namespace }}
+      get pods
+      -l component=cloud-controller-manager
+      -o jsonpath='{range .items[*]}{.status.phase}{"\n"}{end}'
+  register: aws_ccm_pod_phases
+  changed_when: false
+
+- name: Validate AWS CCM pod states
+  ansible.builtin.assert:
+    that:
+      - aws_ccm_pod_phases.stdout_lines | length > 0
+      - aws_ccm_pod_phases.stdout_lines | reject('equalto', 'Running') | list | length == 0
+    fail_msg: "AWS Cloud Controller Manager is not Running."
+
+# ============================================================
+# WAIT FOR PROVIDER IDs
+# ============================================================
+
+- name: Wait for Kubernetes nodes to receive AWS provider IDs
+  ansible.builtin.command:
+    cmd: >
+      kubectl
+      --kubeconfig {{ aws_ccm_kubeconfig }}
+      get nodes
+      -o jsonpath='{range .items[*]}{.spec.providerID}{"\n"}{end}'
+  register: aws_ccm_provider_ids
+  changed_when: false
+  retries: 30
+  delay: 5
+  until:
+    - aws_ccm_provider_ids.rc == 0
+    - aws_ccm_provider_ids.stdout | trim | length > 0
+    - "'aws:///' in aws_ccm_provider_ids.stdout"
+
+# ============================================================
+# DISPLAY PROVIDER IDS
+# ============================================================
+
+- name: Get detailed Kubernetes node provider IDs
+  ansible.builtin.command:
+    cmd: >
+      kubectl
+      --kubeconfig {{ aws_ccm_kubeconfig }}
+      get nodes
+      -o jsonpath='{range .items[*]}{.metadata.name}{" => "}{.spec.providerID}{"\n"}{end}'
+  register: aws_ccm_provider_ids_detailed
+  changed_when: false
+
+- name: Display Kubernetes node provider IDs
+  ansible.builtin.debug:
+    msg: "{{ aws_ccm_provider_ids_detailed.stdout_lines }}"
+
+# ============================================================
+# NODE VALIDATION
+# ============================================================
+
+- name: Get Kubernetes nodes
+  ansible.builtin.command:
+    cmd: >
+      kubectl
+      --kubeconfig {{ aws_ccm_kubeconfig }}
+      get nodes
+      -o wide
+  register: aws_ccm_nodes
+  changed_when: false
+
+- name: Display Kubernetes nodes
+  ansible.builtin.debug:
+    msg: "{{ aws_ccm_nodes.stdout_lines }}"
+
+# ============================================================
+# CLEANUP
+# ============================================================
+
+- name: Remove temporary AWS CCM manifest
+  ansible.builtin.file:
+    path: "{{ aws_ccm_manifest_path }}"
+    state: absent

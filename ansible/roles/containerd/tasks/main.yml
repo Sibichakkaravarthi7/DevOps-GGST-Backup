@@ -1,0 +1,67 @@
+---
+- name: Install containerd
+  ansible.builtin.apt:
+    name: >-
+      {{
+        containerd_package_name
+        ~ (('=' ~ containerd_package_version)
+        if containerd_package_version | length > 0
+        else '')
+      }}
+    state: present
+    update_cache: true
+
+- name: Create containerd configuration directory
+  ansible.builtin.file:
+    path: "{{ containerd_config_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Configure containerd
+  ansible.builtin.template:
+    src: config.toml.j2
+    dest: "{{ containerd_config_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart containerd
+
+- name: Ensure containerd service is enabled and running
+  ansible.builtin.systemd:
+    name: "{{ containerd_service_name }}"
+    enabled: true
+    state: started
+
+- name: Wait for containerd socket
+  ansible.builtin.wait_for:
+    path: /run/containerd/containerd.sock
+    state: present
+    timeout: 30
+
+- name: Verify containerd service
+  ansible.builtin.command:
+    cmd: systemctl is-active containerd
+  register: containerd_service_status
+  changed_when: false
+
+- name: Verify containerd is active
+  ansible.builtin.assert:
+    that:
+      - containerd_service_status.stdout | trim == "active"
+    fail_msg: "containerd is not active."
+    success_msg: "containerd is active."
+
+- name: Verify containerd socket exists
+  ansible.builtin.stat:
+    path: /run/containerd/containerd.sock
+  register: containerd_socket
+
+- name: Fail if containerd socket is missing
+  ansible.builtin.assert:
+    that:
+      - containerd_socket.stat.exists
+      - containerd_socket.stat.socket
+    fail_msg: "containerd CRI socket was not found."
+    success_msg: "containerd CRI socket is available."

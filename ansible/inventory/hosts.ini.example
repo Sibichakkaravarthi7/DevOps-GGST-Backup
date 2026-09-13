@@ -1,0 +1,23 @@
+# ============================================================================
+# STATIC INVENTORY FALLBACK
+# ============================================================================
+#
+# Use this only when AWS dynamic inventory is unavailable.
+#
+# Replace the example IP addresses.
+#
+# ============================================================================
+
+[control_plane]
+control-plane ansible_host=10.0.1.10 ansible_user=ubuntu
+
+[workers]
+worker-1 ansible_host=10.0.2.10 ansible_user=ubuntu
+worker-2 ansible_host=10.0.3.10 ansible_user=ubuntu
+
+[kubernetes:children]
+control_plane
+workers
+
+[all:vars]
+ansible_python_interpreter=/usr/bin/python3

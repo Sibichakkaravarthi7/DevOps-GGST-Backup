@@ -1,0 +1,447 @@
+#!/bin/bash
+
+###############################################################################
+# K8s Worker Bootstrap
+#
+# Terraform-templated reusable worker bootstrap.
+#
+# This is based on the known-working Cluster Autoscaler worker bootstrap.
+###############################################################################
+
+exec > >(tee -a /var/log/user-data-debug.log) 2>&1
+
+set -uo pipefail
+
+LOG="/var/log/user-data-debug.log"
+STATUS="/var/log/k8s-bootstrap-status.log"
+
+API_SERVER="${control_plane_private_ip}"
+API_PORT="6443"
+REGION="${aws_region}"
+SSM_PARAMETER="${ssm_join_parameter}"
+KUBERNETES_VERSION="${kubernetes_version}"
+KUBERNETES_MINOR_VERSION="${kubernetes_minor_version}"
+
+###############################################################################
+# STATUS FUNCTIONS
+###############################################################################
+
+timestamp() {
+    date -u '+%Y-%m-%dT%H:%M:%SZ'
+}
+
+stage() {
+    local name="$1"
+    echo "$(timestamp) STAGE_START|$${name}" | tee -a "$STATUS"
+}
+
+stage_success() {
+    local name="$1"
+    echo "$(timestamp) STAGE_SUCCESS|$${name}" | tee -a "$STATUS"
+}
+
+stage_failure() {
+    local name="$1"
+    local reason="$2"
+
+    echo "$(timestamp) STAGE_FAILED|$${name}|$${reason}" | tee -a "$STATUS"
+
+    echo ""
+    echo "============================================================"
+    echo "BOOTSTRAP FAILURE"
+    echo "Stage  : $${name}"
+    echo "Reason : $${reason}"
+    echo "Time   : $(timestamp)"
+    echo "============================================================"
+    echo ""
+
+    exit 1
+}
+
+###############################################################################
+# GLOBAL ERROR HANDLER
+###############################################################################
+
+trap 'stage_failure "UNKNOWN" "Bootstrap command failed at line $${LINENO}: $${BASH_COMMAND}"' ERR
+
+###############################################################################
+# START
+###############################################################################
+
+echo "============================================================"
+echo "KUBERNETES WORKER BOOTSTRAP"
+echo "Started: $(timestamp)"
+echo "============================================================"
+
+mkdir -p "$(dirname "$STATUS")"
+touch "$STATUS"
+
+###############################################################################
+# 1. EC2 METADATA / HOSTNAME
+###############################################################################
+
+stage "EC2_METADATA"
+
+TOKEN=$(curl -Ss -X PUT \
+    "http://169.254.169.254/latest/api/token" \
+    -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+
+FULL_HOSTNAME=$(curl -Ss \
+    -H "X-aws-ec2-metadata-token: $TOKEN" \
+    http://169.254.169.254/latest/meta-data/local-hostname)
+
+if [[ -z "$FULL_HOSTNAME" ]]; then
+    stage_failure "EC2_METADATA" \
+        "Unable to retrieve EC2 local hostname"
+fi
+
+hostnamectl set-hostname "$FULL_HOSTNAME"
+
+if ! grep -qF "127.0.0.1 $FULL_HOSTNAME" /etc/hosts; then
+    echo "127.0.0.1 $FULL_HOSTNAME $(hostname -s)" >> /etc/hosts
+fi
+
+stage_success "EC2_METADATA"
+
+###############################################################################
+# 2. SWAP / KERNEL
+###############################################################################
+
+stage "KERNEL_CONFIGURATION"
+
+swapoff -a || true
+
+sed -i '/ swap / s/^/#/' /etc/fstab || true
+
+cat > /etc/modules-load.d/k8s.conf <<'MODULES'
+overlay
+br_netfilter
+MODULES
+
+modprobe overlay
+modprobe br_netfilter
+
+cat > /etc/sysctl.d/k8s.conf <<'SYSCTL'
+net.bridge.bridge-nf-call-iptables=1
+net.bridge.bridge-nf-call-ip6tables=1
+net.ipv4.ip_forward=1
+SYSCTL
+
+sysctl --system
+
+stage_success "KERNEL_CONFIGURATION"
+
+###############################################################################
+# 3. CONTAINERD
+###############################################################################
+
+stage "CONTAINERD_INSTALLATION"
+
+apt-get update
+apt-get install -y containerd unzip
+
+mkdir -p /etc/containerd
+
+containerd config default > /etc/containerd/config.toml
+
+sed -i \
+    's/SystemdCgroup = false/SystemdCgroup = true/' \
+    /etc/containerd/config.toml
+
+systemctl enable containerd
+systemctl restart containerd
+
+if ! systemctl is-active --quiet containerd; then
+    stage_failure "CONTAINERD_INSTALLATION" \
+        "containerd service is not running"
+fi
+
+stage_success "CONTAINERD_INSTALLATION"
+
+###############################################################################
+# 4. KUBERNETES PACKAGES
+###############################################################################
+
+stage "KUBERNETES_INSTALLATION"
+
+apt-get update
+
+apt-get install -y \
+    apt-transport-https \
+    ca-certificates \
+    curl \
+    gpg
+
+mkdir -p /etc/apt/keyrings
+
+curl -fsSL \
+    "https://pkgs.k8s.io/core:/stable:/v$${KUBERNETES_MINOR_VERSION}/deb/Release.key" \
+    | gpg --dearmor --yes \
+    -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+echo \
+    "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v$${KUBERNETES_MINOR_VERSION}/deb/ /" \
+    > /etc/apt/sources.list.d/kubernetes.list
+
+apt-get update
+
+apt-get install -y \
+    "kubelet=$${KUBERNETES_VERSION}-*" \
+    "kubeadm=$${KUBERNETES_VERSION}-*" \
+    "kubectl=$${KUBERNETES_VERSION}-*"
+
+apt-mark hold kubelet kubeadm kubectl
+
+stage_success "KUBERNETES_INSTALLATION"
+
+###############################################################################
+# 5. AWS CLI
+###############################################################################
+
+stage "AWS_CLI_INSTALLATION"
+
+if ! command -v aws >/dev/null 2>&1; then
+
+    curl -Ss \
+        "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" \
+        -o /tmp/awscliv2.zip
+
+    unzip -q /tmp/awscliv2.zip -d /tmp
+
+    /tmp/aws/install
+
+fi
+
+if ! command -v aws >/dev/null 2>&1; then
+    stage_failure "AWS_CLI_INSTALLATION" \
+        "AWS CLI installation failed"
+fi
+
+echo "AWS CLI: $(aws --version)"
+
+stage_success "AWS_CLI_INSTALLATION"
+
+###############################################################################
+# 6. AWS SSM AGENT
+###############################################################################
+
+stage "SSM_AGENT_INSTALLATION"
+
+echo "DEBUG: installing AWS SSM Agent"
+
+if ! systemctl list-unit-files | grep -q \
+    'snap.amazon-ssm-agent.amazon-ssm-agent.service'; then
+
+    snap install amazon-ssm-agent --classic
+
+fi
+
+systemctl enable --now \
+    snap.amazon-ssm-agent.amazon-ssm-agent.service
+
+if ! systemctl is-active --quiet \
+    snap.amazon-ssm-agent.amazon-ssm-agent.service; then
+
+    stage_failure "SSM_AGENT_INSTALLATION" \
+        "AWS SSM Agent is not running"
+
+fi
+
+stage_success "SSM_AGENT_INSTALLATION"
+
+###############################################################################
+# 7. AWS / SSM CONNECTIVITY
+###############################################################################
+
+stage "SSM_CONNECTIVITY"
+
+SSM_TEST=""
+RC=1
+
+for i in $(seq 1 30); do
+
+    SSM_TEST=$(aws ssm get-parameter \
+        --name "$SSM_PARAMETER" \
+        --with-decryption \
+        --region "$REGION" \
+        --query "Parameter.Value" \
+        --output text 2>&1)
+
+    RC=$?
+
+    echo "SSM attempt $${i}: rc=$${RC}"
+
+    if [[ $RC -eq 0 ]]; then
+        break
+    fi
+
+    sleep 10
+
+done
+
+if [[ $RC -ne 0 ]]; then
+
+    stage_failure "SSM_CONNECTIVITY" \
+        "Unable to retrieve $${SSM_PARAMETER}: $${SSM_TEST}"
+
+fi
+
+JOIN_CMD="$SSM_TEST"
+
+if [[ -z "$JOIN_CMD" || "$JOIN_CMD" == "None" ]]; then
+
+    stage_failure "SSM_CONNECTIVITY" \
+        "SSM parameter $${SSM_PARAMETER} returned empty value"
+
+fi
+
+if [[ "$JOIN_CMD" != kubeadm\ join* ]]; then
+
+    stage_failure "SSM_CONNECTIVITY" \
+        "SSM parameter does not contain a kubeadm join command"
+
+fi
+
+stage_success "SSM_CONNECTIVITY"
+
+###############################################################################
+# 8. API SERVER NETWORK CONNECTIVITY
+###############################################################################
+
+stage "API_SERVER_CONNECTIVITY"
+
+echo "Testing $${API_SERVER}:$${API_PORT}"
+
+if ! timeout 10 bash -c \
+    "</dev/tcp/$${API_SERVER}/$${API_PORT}" \
+    2>/dev/null; then
+
+    stage_failure "API_SERVER_CONNECTIVITY" \
+        "Cannot connect to $${API_SERVER}:$${API_PORT}"
+
+fi
+
+stage_success "API_SERVER_CONNECTIVITY"
+
+###############################################################################
+# 9. KUBELET CONFIGURATION
+###############################################################################
+
+stage "KUBELET_CONFIGURATION"
+
+echo \
+"KUBELET_EXTRA_ARGS=--cloud-provider=external" \
+> /etc/default/kubelet
+
+systemctl daemon-reload
+
+stage_success "KUBELET_CONFIGURATION"
+
+###############################################################################
+# 10. KUBEADM JOIN
+###############################################################################
+
+stage "KUBEADM_JOIN"
+
+echo "Running kubeadm join"
+echo "Join command retrieved successfully."
+
+# Do not print the join token.
+#
+# The SSM value is expected to be a single-line command:
+#
+# kubeadm join <api-server>:6443 --token ... \
+#   --discovery-token-ca-cert-hash sha256:...
+
+JOIN_ARGS="$${JOIN_CMD#kubeadm join }"
+
+set +e
+
+read -r -a JOIN_ARGUMENT_ARRAY <<< "$JOIN_ARGS"
+
+kubeadm join \
+    "$${JOIN_ARGUMENT_ARRAY[@]}" \
+    --cri-socket "unix:///var/run/containerd/containerd.sock"
+
+JOIN_RC=$?
+
+set -e
+
+if [[ $JOIN_RC -ne 0 ]]; then
+
+    echo ""
+    echo "KUBEADM JOIN FAILED"
+    echo "Exit code: $${JOIN_RC}"
+    echo ""
+
+    echo "========== KUBELET STATUS =========="
+    systemctl status kubelet --no-pager || true
+
+    echo "========== KUBELET LOG =========="
+    journalctl -u kubelet \
+        --no-pager \
+        -n 100 || true
+
+    stage_failure "KUBEADM_JOIN" \
+        "kubeadm join failed with exit code $${JOIN_RC}"
+
+fi
+
+stage_success "KUBEADM_JOIN"
+
+###############################################################################
+# 11. KUBELET
+###############################################################################
+
+stage "KUBELET_HEALTH"
+
+systemctl enable kubelet
+
+if ! systemctl is-active --quiet kubelet; then
+
+    systemctl restart kubelet
+
+    sleep 5
+
+fi
+
+if ! systemctl is-active --quiet kubelet; then
+
+    stage_failure "KUBELET_HEALTH" \
+        "kubelet is not running after kubeadm join"
+
+fi
+
+stage_success "KUBELET_HEALTH"
+
+###############################################################################
+# 12. FINAL VALIDATION
+###############################################################################
+
+stage "BOOTSTRAP_COMPLETE"
+
+if [[ ! -f /etc/kubernetes/kubelet.conf ]]; then
+    stage_failure "BOOTSTRAP_COMPLETE" \
+        "kubelet.conf was not created"
+fi
+
+if [[ ! -f /var/lib/kubelet/config.yaml ]]; then
+    stage_failure "BOOTSTRAP_COMPLETE" \
+        "kubelet config.yaml was not created"
+fi
+
+if ! systemctl is-active --quiet containerd; then
+    stage_failure "BOOTSTRAP_COMPLETE" \
+        "containerd is not running"
+fi
+
+echo "$(timestamp) BOOTSTRAP_SUCCESS" \
+    | tee -a "$STATUS"
+
+touch /var/lib/kubernetes-worker-bootstrap-complete
+
+echo ""
+echo "============================================================"
+echo "KUBERNETES WORKER BOOTSTRAP SUCCESS"
+echo "Completed: $(timestamp)"
+echo "============================================================"

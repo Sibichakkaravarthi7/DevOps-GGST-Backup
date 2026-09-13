@@ -1,0 +1,79 @@
+# ================================================================
+# Terraform
+# ================================================================
+
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+
+# Terraform variable files may contain infrastructure-specific values
+# Keep the example file tracked.
+*.tfvars
+!*.tfvars.example
+
+# Terraform lock file SHOULD be committed
+# .terraform.lock.hcl
+
+# ================================================================
+# Ansible
+# ================================================================
+
+*.retry
+ansible/inventory/hosts.ini
+
+# Do not commit private SSH keys
+*.pem
+*.key
+id_rsa
+id_ed25519
+
+# ================================================================
+# Kubernetes / Secrets
+# ================================================================
+
+kubeconfig
+kubeconfig.*
+*.kubeconfig
+admin.conf
+join-command
+*.token
+*.crt
+*.key
+*.csr
+
+# ================================================================
+# Sensitive local configuration
+# ================================================================
+
+.env
+.env.*
+!.env.example
+
+# ================================================================
+# Logs
+# ================================================================
+
+*.log
+logs/
+tmp/
+temp/
+
+# ================================================================
+# OS files
+# ================================================================
+
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ================================================================
+# Editors
+# ================================================================
+
+.vscode/
+.idea/
+*.swp
+*.swo

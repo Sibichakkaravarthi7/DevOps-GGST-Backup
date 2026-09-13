@@ -1,0 +1,10 @@
+---
+kubernetes_apt_keyring: "/etc/apt/keyrings/kubernetes-apt-keyring.gpg"
+kubernetes_apt_source: "/etc/apt/sources.list.d/kubernetes.list"
+
+kubernetes_apt_repository_base: "https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_minor_version }}/deb/"
+
+kubernetes_packages:
+  - kubelet
+  - kubeadm
+  - kubectl

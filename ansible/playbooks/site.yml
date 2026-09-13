@@ -1,0 +1,152 @@
+---
+# ============================================================================
+# AWS KUBERNETES PLATFORM - MAIN ORCHESTRATION
+# ============================================================================
+#
+# Execution order:
+#
+#   1. Prepare nodes
+#   2. Initialize control plane
+#   3. Install Flannel
+#   4. Install AWS Cloud Controller Manager
+#   5. Join workers
+#   6. Install Cluster Autoscaler
+#   7. Validate complete platform
+#
+# IMPORTANT:
+#   This playbook assumes Terraform has already created:
+#     - VPC/subnets
+#     - security groups
+#     - IAM roles
+#     - control-plane EC2
+#     - worker ASG
+#
+#   Ansible is responsible for Kubernetes/OS configuration.
+# ============================================================================
+
+
+# ----------------------------------------------------------------------------
+# PHASE 1 - Prepare all Kubernetes nodes
+# ----------------------------------------------------------------------------
+- name: "PHASE 1 - Prepare Kubernetes nodes"
+  import_playbook: prepare-nodes.yml
+
+
+# ----------------------------------------------------------------------------
+# PHASE 2 - Initialize Kubernetes control plane
+# ----------------------------------------------------------------------------
+- name: "PHASE 2 - Initialize control plane"
+  import_playbook: control-plane.yml
+
+
+# ----------------------------------------------------------------------------
+# PHASE 3 - Install Flannel CNI
+# ----------------------------------------------------------------------------
+- name: "PHASE 3 - Install Flannel"
+  import_playbook: flannel.yml
+
+
+# ----------------------------------------------------------------------------
+# PHASE 4 - Install AWS Cloud Controller Manager
+# ----------------------------------------------------------------------------
+- name: "PHASE 4 - Install AWS CCM"
+  import_playbook: aws-ccm.yml
+
+
+# ----------------------------------------------------------------------------
+# PHASE 5 - Join worker nodes
+# ----------------------------------------------------------------------------
+- name: "PHASE 5 - Join workers"
+  import_playbook: workers.yml
+
+
+# ----------------------------------------------------------------------------
+# PHASE 6 - Install Cluster Autoscaler
+# ----------------------------------------------------------------------------
+- name: "PHASE 6 - Install Cluster Autoscaler"
+  import_playbook: cluster-autoscaler.yml
+
+
+# ----------------------------------------------------------------------------
+# PHASE 7 - Final platform validation
+# ----------------------------------------------------------------------------
+- name: "PHASE 7 - Validate Kubernetes platform"
+  hosts: control_plane
+  become: true
+  gather_facts: false
+
+  environment:
+    KUBECONFIG: "/etc/kubernetes/admin.conf"
+
+  tasks:
+
+    - name: Verify Kubernetes API
+      ansible.builtin.command:
+        cmd: kubectl get --raw=/readyz
+      register: final_api_check
+      changed_when: false
+
+    - name: Get cluster nodes
+      ansible.builtin.command:
+        cmd: kubectl get nodes -o wide
+      register: final_nodes
+      changed_when: false
+
+    - name: Get system pods
+      ansible.builtin.command:
+        cmd: kubectl get pods -A -o wide
+      register: final_pods
+      changed_when: false
+
+    - name: Get AWS CCM status
+      ansible.builtin.command:
+        cmd: >
+          kubectl get deployment
+          cloud-controller-manager
+          -n kube-system
+      register: final_ccm
+      changed_when: false
+
+    - name: Get Cluster Autoscaler status
+      ansible.builtin.command:
+        cmd: >
+          kubectl get deployment
+          cluster-autoscaler
+          -n kube-system
+      register: final_ca
+      changed_when: false
+
+    - name: Get node provider IDs
+      ansible.builtin.command:
+        cmd: >
+          kubectl get nodes
+          -o jsonpath='{range .items[*]}{.metadata.name}{" => "}{.spec.providerID}{"\n"}{end}'
+      register: final_provider_ids
+      changed_when: false
+
+    - name: Display final platform validation
+      ansible.builtin.debug:
+        msg:
+          - "=============================================================="
+          - "AWS KUBERNETES PLATFORM VALIDATION"
+          - "=============================================================="
+          - "Kubernetes API : READY"
+          - ""
+          - "NODES:"
+          - "{{ final_nodes.stdout }}"
+          - ""
+          - "AWS CCM:"
+          - "{{ final_ccm.stdout }}"
+          - ""
+          - "CLUSTER AUTOSCALER:"
+          - "{{ final_ca.stdout }}"
+          - ""
+          - "PROVIDER IDS:"
+          - "{{ final_provider_ids.stdout }}"
+          - ""
+          - "SYSTEM PODS:"
+          - "{{ final_pods.stdout }}"
+          - ""
+          - "=============================================================="
+          - "PLATFORM VALIDATION COMPLETE"
+          - "=============================================================="

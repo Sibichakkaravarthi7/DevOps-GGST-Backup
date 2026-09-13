@@ -1,0 +1,18 @@
+---
+# ================================================================
+# GLOBAL KUBERNETES PLATFORM SETTINGS
+# ================================================================
+
+kubernetes_version: "1.30.14"
+kubernetes_minor_version: "1.30"
+
+containerd_version: "2.2.2"
+
+pod_cidr: "10.244.0.0/16"
+service_cidr: "10.96.0.0/12"
+
+cluster_dns_domain: "cluster.local"
+
+common_timezone: "UTC"
+common_disable_swap: true
+common_enable_ipv4_forwarding: true

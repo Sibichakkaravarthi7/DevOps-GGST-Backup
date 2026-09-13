@@ -1,0 +1,18 @@
+version = 3
+
+[plugins]
+  [plugins."io.containerd.cri.v1.images"]
+    snapshotter = "overlayfs"
+
+  [plugins."io.containerd.cri.v1.runtime"]
+    [plugins."io.containerd.cri.v1.runtime".containerd]
+      default_runtime_name = "runc"
+
+      [plugins."io.containerd.cri.v1.runtime".containerd.runtimes]
+        [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.runc]
+          runtime_type = "io.containerd.runc.v2"
+
+          [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.runc.options]
+            SystemdCgroup = {{ containerd_systemd_cgroup | lower }}
+
+    sandbox_image = "{{ containerd_sandbox_image }}"

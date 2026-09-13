@@ -1,0 +1,49 @@
+---
+# ---------------------------------------------------------------------------
+# Cluster Autoscaler configuration
+# ---------------------------------------------------------------------------
+
+cluster_autoscaler_namespace: "kube-system"
+cluster_autoscaler_service_account: "cluster-autoscaler"
+
+# Keep this aligned with the Kubernetes minor version.
+cluster_autoscaler_version: "v1.30.0"
+cluster_autoscaler_image: "registry.k8s.io/autoscaling/cluster-autoscaler:{{ cluster_autoscaler_version }}"
+
+cluster_autoscaler_deployment_name: "cluster-autoscaler"
+cluster_autoscaler_manifest_path: "/tmp/cluster-autoscaler.yaml"
+cluster_autoscaler_kubeconfig: "/etc/kubernetes/admin.conf"
+
+# AWS
+cluster_autoscaler_cloud_provider: "aws"
+cluster_autoscaler_aws_region: "{{ aws_region }}"
+
+# ASG auto-discovery.
+# The ASG itself is NOT hardcoded.
+cluster_autoscaler_auto_discovery_tags:
+  - "k8s.io/cluster-autoscaler/enabled"
+  - "k8s.io/cluster-autoscaler/{{ cluster_name }}"
+
+# Behavior matching the working cluster.
+cluster_autoscaler_log_level: 4
+cluster_autoscaler_stderr_threshold: "info"
+cluster_autoscaler_expander: "least-waste"
+cluster_autoscaler_skip_nodes_with_local_storage: false
+cluster_autoscaler_skip_nodes_with_system_pods: false
+cluster_autoscaler_balance_similar_node_groups: true
+
+# Deployment behavior
+cluster_autoscaler_replicas: 1
+cluster_autoscaler_wait_timeout: 300
+
+# Resource settings
+cluster_autoscaler_cpu_request: "100m"
+cluster_autoscaler_memory_request: "300Mi"
+cluster_autoscaler_cpu_limit: "500m"
+cluster_autoscaler_memory_limit: "600Mi"
+
+# Priority class keeps CA running when resources are constrained.
+cluster_autoscaler_priority_class: "cluster-autoscaler-priority"
+
+# Pod disruption protection.
+cluster_autoscaler_pdb_min_available: 1

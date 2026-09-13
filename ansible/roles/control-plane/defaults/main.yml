@@ -1,0 +1,33 @@
+---
+# ============================================================
+# CONTROL PLANE DEFAULTS
+# ============================================================
+
+control_plane_kubeadm_config: "/etc/kubernetes/kubeadm-config.yaml"
+control_plane_admin_conf: "/etc/kubernetes/admin.conf"
+
+control_plane_kubeconfig_dir: "/root/.kube"
+control_plane_kubeconfig: "/root/.kube/config"
+
+control_plane_api_port: 6443
+
+# AWS region should normally be overridden from inventory/group_vars.
+aws_region: "us-east-1"
+
+# Cluster name used by AWS CCM / Cluster Autoscaler.
+cluster_name: "k8s-cluster"
+
+# SSM parameter containing the worker join command.
+ssm_join_parameter: "/k8s/join-command"
+
+# kubeadm/containerd integration.
+control_plane_container_runtime_endpoint: "unix:///var/run/containerd/containerd.sock"
+
+# Kubernetes image repository.
+control_plane_image_repository: "registry.k8s.io"
+
+# kubeadm timeout.
+control_plane_init_timeout: "10m"
+
+# Whether the worker join command should be stored in SSM.
+control_plane_publish_join_command: true

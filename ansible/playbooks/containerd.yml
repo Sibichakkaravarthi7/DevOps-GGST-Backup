@@ -1,0 +1,8 @@
+---
+- name: Configure containerd on Kubernetes nodes
+  hosts: kubernetes
+  become: true
+  gather_facts: true
+
+  roles:
+    - containerd

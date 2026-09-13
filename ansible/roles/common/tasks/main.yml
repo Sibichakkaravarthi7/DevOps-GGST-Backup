@@ -1,0 +1,93 @@
+---
+- name: Set system timezone
+  ansible.builtin.timezone:
+    name: "{{ common_timezone }}"
+
+- name: Update apt package cache
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Install common Kubernetes host packages
+  ansible.builtin.apt:
+    name: "{{ common_packages }}"
+    state: present
+
+- name: Disable swap immediately
+  ansible.builtin.command:
+    cmd: swapoff -a
+  when: common_disable_swap
+  changed_when: false
+
+- name: Remove active swap entries from fstab
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^(\s*[^#]\S+\s+\S+\s+swap\s+.*)$'
+    replace: '# \1'
+  when: common_disable_swap
+
+- name: Create Kubernetes kernel modules configuration
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/k8s.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      overlay
+      br_netfilter
+  notify: Reload kernel modules
+
+- name: Load overlay kernel module
+  ansible.builtin.modprobe:
+    name: overlay
+    state: present
+
+- name: Load br_netfilter kernel module
+  ansible.builtin.modprobe:
+    name: br_netfilter
+    state: present
+
+- name: Configure Kubernetes networking sysctl settings
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/99-kubernetes-cri.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      net.bridge.bridge-nf-call-iptables = 1
+      net.bridge.bridge-nf-call-ip6tables = 1
+      net.ipv4.ip_forward = 1
+  when: common_enable_ipv4_forwarding
+  notify: Apply sysctl
+
+- name: Ensure chrony is enabled and running
+  ansible.builtin.service:
+    name: chrony
+    state: started
+    enabled: true
+
+- name: Verify swap is disabled
+  ansible.builtin.command:
+    cmd: swapon --show
+  register: common_swap_status
+  changed_when: false
+
+- name: Fail if swap is still enabled
+  ansible.builtin.assert:
+    that:
+      - common_swap_status.stdout | trim == ""
+    fail_msg: "Swap is still enabled on this Kubernetes node."
+    success_msg: "Swap is disabled."
+
+- name: Verify IPv4 forwarding
+  ansible.builtin.command:
+    cmd: sysctl -n net.ipv4.ip_forward
+  register: common_ip_forwarding
+  changed_when: false
+
+- name: Fail if IPv4 forwarding is disabled
+  ansible.builtin.assert:
+    that:
+      - common_ip_forwarding.stdout | trim == "1"
+    fail_msg: "net.ipv4.ip_forward is not enabled."
+    success_msg: "IPv4 forwarding is enabled."

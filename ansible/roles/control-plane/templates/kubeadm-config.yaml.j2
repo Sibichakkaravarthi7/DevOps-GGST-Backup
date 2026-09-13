@@ -1,0 +1,46 @@
+---
+apiVersion: kubeadm.k8s.io/v1beta3
+kind: InitConfiguration
+
+localAPIEndpoint:
+  advertiseAddress: "{{ ansible_default_ipv4.address }}"
+  bindPort: {{ control_plane_api_port }}
+
+nodeRegistration:
+  criSocket: "{{ control_plane_container_runtime_endpoint }}"
+  kubeletExtraArgs:
+    cloud-provider: external
+
+---
+
+apiVersion: kubeadm.k8s.io/v1beta3
+kind: ClusterConfiguration
+
+kubernetesVersion: "{{ kubernetes_version }}"
+imageRepository: "{{ control_plane_image_repository }}"
+
+clusterName: "{{ cluster_name }}"
+
+certificatesDir: /etc/kubernetes/pki
+
+apiServer:
+  timeoutForControlPlane: 4m0s
+  extraArgs:
+    cloud-provider: external
+
+controllerManager:
+  extraArgs:
+    cloud-provider: external
+
+scheduler: {}
+
+etcd:
+  local:
+    dataDir: /var/lib/etcd
+
+networking:
+  dnsDomain: "{{ cluster_dns_domain }}"
+  podSubnet: "{{ pod_cidr }}"
+  serviceSubnet: "{{ service_cidr }}"
+
+dns: {}

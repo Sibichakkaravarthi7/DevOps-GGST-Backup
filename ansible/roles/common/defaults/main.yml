@@ -1,0 +1,23 @@
+---
+# Common host configuration
+
+common_timezone: "UTC"
+
+# Kubernetes networking
+common_enable_ipv4_forwarding: true
+common_disable_swap: true
+
+# Packages required on all Kubernetes nodes
+common_packages:
+  - apt-transport-https
+  - ca-certificates
+  - curl
+  - gpg
+  - jq
+  - socat
+  - conntrack
+  - iptables
+  - ipset
+  - ethtool
+  - unzip
+  - chrony

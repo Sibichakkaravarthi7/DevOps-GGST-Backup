@@ -1,0 +1,205 @@
+---
+# ============================================================
+# WORKER NODE PREPARATION
+# ============================================================
+
+- name: Install worker helper packages
+  ansible.builtin.apt:
+    name:
+      - awscli
+      - jq
+    state: present
+    update_cache: true
+
+- name: Ensure kubelet is enabled
+  ansible.builtin.systemd:
+    name: kubelet
+    enabled: true
+    daemon_reload: true
+
+# ============================================================
+# DETECT EXISTING / INCOMPLETE KUBEADM STATE
+# ============================================================
+
+- name: Check kubelet configuration
+  ansible.builtin.stat:
+    path: "{{ worker_kubelet_config }}"
+  register: worker_kubelet_config_stat
+
+- name: Check Kubernetes PKI directory
+  ansible.builtin.stat:
+    path: /etc/kubernetes/pki
+  register: worker_kubernetes_pki_stat
+
+- name: Check kubeadm kubelet flags
+  ansible.builtin.stat:
+    path: "{{ worker_kubelet_kubeadm_args }}"
+  register: worker_kubeadm_flags_stat
+
+- name: Determine whether worker is already joined
+  ansible.builtin.set_fact:
+    worker_already_joined: >-
+      {{
+        worker_kubelet_config_stat.stat.exists
+        and worker_kubeadm_flags_stat.stat.exists
+      }}
+
+- name: Determine whether incomplete kubeadm state exists
+  ansible.builtin.set_fact:
+    worker_incomplete_kubeadm_state: >-
+      {{
+        not worker_already_joined
+        and (
+          worker_kubernetes_pki_stat.stat.exists
+          or worker_kubeadm_flags_stat.stat.exists
+        )
+      }}
+
+# ============================================================
+# CLEAN INCOMPLETE KUBEADM STATE
+# ============================================================
+
+- name: Reset incomplete kubeadm state
+  ansible.builtin.command:
+    cmd: kubeadm reset --force
+  when: worker_incomplete_kubeadm_state
+  register: worker_kubeadm_reset
+  changed_when: true
+
+- name: Remove stale Kubernetes configuration after reset
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/kubernetes/kubelet.conf
+    - /etc/kubernetes/bootstrap-kubelet.conf
+    - /etc/kubernetes/pki
+  when: worker_incomplete_kubeadm_state
+
+# ============================================================
+# RETRIEVE JOIN COMMAND FROM AWS SSM
+# ============================================================
+
+- name: Retrieve worker join command from AWS SSM
+  ansible.builtin.command:
+    cmd: >
+      aws ssm get-parameter
+      --region {{ aws_region }}
+      --name {{ worker_join_command_parameter }}
+      --with-decryption
+      --query Parameter.Value
+      --output text
+  environment:
+    AWS_DEFAULT_REGION: "{{ aws_region }}"
+  register: worker_join_parameter
+  changed_when: false
+  no_log: true
+  when: not worker_already_joined
+
+- name: Validate worker join command
+  ansible.builtin.assert:
+    that:
+      - worker_join_parameter.stdout | trim | length > 0
+      - "'kubeadm join' in worker_join_parameter.stdout"
+      - "'--token' in worker_join_parameter.stdout"
+      - "'--discovery-token-ca-cert-hash' in worker_join_parameter.stdout"
+    fail_msg: >-
+      The worker join command could not be retrieved from AWS SSM
+      parameter {{ worker_join_command_parameter }}.
+  no_log: true
+  when: not worker_already_joined
+
+# ============================================================
+# JOIN KUBERNETES CLUSTER
+# ============================================================
+
+- name: Join worker to Kubernetes cluster
+  ansible.builtin.command:
+    cmd: >-
+      {{ worker_join_parameter.stdout | trim }}
+      --cri-socket {{ worker_container_runtime_endpoint }}
+      --node-name {{ ansible_hostname }}
+  when: not worker_already_joined
+  register: worker_kubeadm_join
+  no_log: true
+  timeout: "{{ worker_join_timeout }}"
+
+# ============================================================
+# ENSURE KUBELET USES EXTERNAL CLOUD PROVIDER
+# ============================================================
+
+- name: Configure kubelet external cloud provider
+  ansible.builtin.copy:
+    dest: /etc/default/kubelet
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      KUBELET_EXTRA_ARGS=--cloud-provider={{ worker_cloud_provider }}
+  notify: Restart kubelet
+
+# ============================================================
+# START SERVICES
+# ============================================================
+
+- name: Enable and start kubelet
+  ansible.builtin.systemd:
+    name: kubelet
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Check kubelet service
+  ansible.builtin.systemd:
+    name: kubelet
+  register: worker_kubelet_status
+  changed_when: false
+  retries: 20
+  delay: 3
+  until: worker_kubelet_status.status.ActiveState == "active"
+
+- name: Check containerd service
+  ansible.builtin.systemd:
+    name: containerd
+  register: worker_containerd_status
+  changed_when: false
+
+# ============================================================
+# LOCAL VALIDATION
+# ============================================================
+
+- name: Verify kubelet is active
+  ansible.builtin.assert:
+    that:
+      - worker_kubelet_status.status.ActiveState == "active"
+    fail_msg: "kubelet is not active on the worker."
+
+- name: Verify containerd is active
+  ansible.builtin.assert:
+    that:
+      - worker_containerd_status.status.ActiveState == "active"
+    fail_msg: "containerd is not active on the worker."
+
+- name: Check kubelet configuration after join
+  ansible.builtin.stat:
+    path: "{{ worker_kubelet_config }}"
+  register: worker_final_kubelet_config
+
+- name: Verify worker has kubelet configuration
+  ansible.builtin.assert:
+    that:
+      - worker_final_kubelet_config.stat.exists
+    fail_msg: "Worker does not have kubelet configuration after join."
+
+# ============================================================
+# FINAL STATUS
+# ============================================================
+
+- name: Display worker status
+  ansible.builtin.debug:
+    msg:
+      - "Worker hostname: {{ ansible_hostname }}"
+      - "Worker private IP: {{ ansible_default_ipv4.address }}"
+      - "Kubelet: {{ worker_kubelet_status.status.ActiveState }}"
+      - "Containerd: {{ worker_containerd_status.status.ActiveState }}"
+      - "Kubernetes join state: {{ 'already joined' if worker_already_joined else 'joined during this run' }}"

@@ -1,0 +1,23 @@
+---
+# ============================================================
+# WORKER NODE DEFAULTS
+# ============================================================
+
+worker_kubelet_config: "/var/lib/kubelet/config.yaml"
+
+worker_kubelet_kubeadm_args: "/var/lib/kubelet/kubeadm-flags.env"
+
+worker_join_command_parameter: "/k8s/join-command"
+
+worker_join_timeout: "10m"
+
+aws_region: "us-east-1"
+
+cluster_name: "k8s-cluster"
+
+# Containerd CRI socket.
+worker_container_runtime_endpoint: "unix:///var/run/containerd/containerd.sock"
+
+# External cloud provider is required because AWS CCM owns
+# the AWS cloud-provider integration.
+worker_cloud_provider: "external"

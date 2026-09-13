@@ -1,0 +1,8 @@
+---
+- name: Install Cluster Autoscaler
+  hosts: control_plane
+  become: true
+  gather_facts: true
+
+  roles:
+    - cluster-autoscaler

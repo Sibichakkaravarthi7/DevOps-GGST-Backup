@@ -1,0 +1,25 @@
+---
+# ============================================================
+# FLANNEL DEFAULTS
+# ============================================================
+
+flannel_namespace: "kube-flannel"
+
+# Pin the release for reproducible infrastructure deployments.
+# Update this deliberately when upgrading Flannel.
+flannel_version: "v0.28.9"
+
+flannel_manifest_url: "https://github.com/flannel-io/flannel/releases/download/{{ flannel_version }}/kube-flannel.yml"
+
+# Must match kubeadm ClusterConfiguration.networking.podSubnet.
+flannel_pod_cidr: "{{ pod_cidr }}"
+
+flannel_backend_type: "vxlan"
+
+flannel_daemonset_name: "kube-flannel-ds"
+
+flannel_wait_timeout: 300
+
+flannel_kubeconfig: "/etc/kubernetes/admin.conf"
+
+flannel_manifest_path: "/tmp/kube-flannel.yml"

@@ -1,0 +1,8 @@
+---
+- name: Install Kubernetes Pod networking
+  hosts: control_plane
+  become: true
+  gather_facts: true
+
+  roles:
+    - flannel

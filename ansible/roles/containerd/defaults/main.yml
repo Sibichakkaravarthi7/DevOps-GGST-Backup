@@ -1,0 +1,13 @@
+---
+containerd_package_name: "containerd"
+
+# Leave empty to install the repository version.
+# Set this only if a specific package version is required.
+containerd_package_version: ""
+
+containerd_config_path: "/etc/containerd/config.toml"
+containerd_service_name: "containerd"
+
+containerd_systemd_cgroup: true
+
+containerd_sandbox_image: "registry.k8s.io/pause:3.9"

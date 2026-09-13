@@ -1,0 +1,3 @@
+---
+# AWS CCM is managed declaratively through Kubernetes.
+# No systemd restart handler is required.
